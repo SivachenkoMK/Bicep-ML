@@ -9,6 +9,8 @@ param computerName string = 'mikhail'
 
 param adminUsername string = 'mikhail'
 
+param nvidiaDriverVersion string = '535'
+
 param homeDirectory string = '/home/${adminUsername}'
 
 @secure()
@@ -21,6 +23,11 @@ param setupUrl string
 param trainingUrl string
 
 @secure()
+param configUrl string
+
+// If I need to add one more Url which will be fetched from setup script, will make a deployment bundle
+
+@secure()
 param adminPassword string
 
 resource publicIPAddress 'Microsoft.Network/publicIPAddresses@2024-03-01' = {
@@ -29,7 +36,7 @@ resource publicIPAddress 'Microsoft.Network/publicIPAddresses@2024-03-01' = {
   properties: {
     publicIPAllocationMethod: 'Dynamic'
     dnsSettings: {
-      domainNameLabel: 'mikhail-dns-label'
+      domainNameLabel: 'dns-label-${deploymentId}'
     }
   }
 }
@@ -83,7 +90,7 @@ resource Vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
   }
   properties: {
     hardwareProfile: {
-      vmSize: 'Standard_B1s'
+      vmSize: 'Standard_NC4as_T4_v3'
     }
     osProfile: {
       computerName: computerName
@@ -115,10 +122,28 @@ resource Vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
         '  exit 1\n',
         'fi\n',
         '\n',
+        'curl -o ', homeDirectory, '/workdir/config.json "', configUrl, '" >> $LOG_FILE 2>&1\n',
+        'chmod 644 ', homeDirectory, '/workdir/config.json >> $LOG_FILE 2>&1\n',
+        'if [ $? -eq 0 ]; then\n',
+        '  echo "$(date) - Training config fetched successfully and stored at ', homeDirectory, '/workdir/config.json" >> $LOG_FILE\n',
+        'else\n',
+        '  echo "$(date) - Failed to fetch training config" >> $LOG_FILE\n',
+        '  exit 1\n',
+        'fi\n',
         '# Create "saved_models_per_epoch" directory and give all permissions\n',
         'mkdir -p ', homeDirectory, '/workdir/saved_models_per_epoch >> $LOG_FILE 2>&1\n',
         'chmod 777 ', homeDirectory, '/workdir/saved_models_per_epoch >> $LOG_FILE 2>&1\n',
-        'echo "$(date) - "saved_models_per_epoch" directory created with full permissions." >> $LOG_FILE\n'
+        'echo "$(date) - "saved_models_per_epoch" directory created with full permissions." >> $LOG_FILE\n',
+        'echo "$(date) - Installing Nvidia drivers." >> $LOG_FILE\n',
+        'sudo apt-get update >> $LOG_FILE 2>&1\n',
+        'sudo apt-get install -y nvidia-driver-', nvidiaDriverVersion, ' >> $LOG_FILE 2>&1\n',
+        'if [ $? -eq 0 ]; then\n',
+        '  echo "$(date) - Nvidia driver installed successfully, rebooting." >> $LOG_FILE\n',
+        '  sudo reboot\n',
+        'else\n',
+        '  echo "$(date) - Nvidia driver installation failed." >> $LOG_FILE\n',
+        '  exit 1\n',
+        'fi\n'
       ))      
     }
     storageProfile: {

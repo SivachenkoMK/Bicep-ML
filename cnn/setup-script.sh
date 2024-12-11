@@ -60,7 +60,7 @@ if [ -f "myenv/bin/activate" ]; then
   log "Activating virtual environment and installing packages..."
   source myenv/bin/activate
   pip install --upgrade pip | tee -a "$LOGFILE"
-  pip install tensorflow==2.16.1 numpy==1.26.4 scipy==1.14.1 matplotlib==3.9.3 azure-identity azure-storage-blob azure-keyvault-secrets | tee -a "$LOGFILE"
+  pip install tensorflow[and-cuda] numpy scipy matplotlib azure-identity azure-storage-blob azure-keyvault-secrets | tee -a "$LOGFILE"
   echo "Creating training.log" | tee -a "$LOGFILE"
   touch training.log 2>&1 | tee -a "$LOGFILE"
   echo "Setting permissions on training.log" | tee -a "$LOGFILE"

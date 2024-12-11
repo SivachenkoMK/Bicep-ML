@@ -1,0 +1,7 @@
+{
+    "key_vault_name": "cnn-secrets",
+    "container_name": "datasets",
+    "model_container_name": "models",
+    "fire_directory": "training/fire",
+    "nofire_directory": "training/nofire"
+}

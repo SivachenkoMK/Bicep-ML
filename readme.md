@@ -24,6 +24,8 @@ Here is a complete list of all environment variables:
 
 `$AZURE_TRAININGPY_URL` - url to the python training script with SAS key (built from script)
 
+`AZURE_TRAINING_CONFIG_URL` - url to the config.json with Azure configurations for training
+
 `AZURE_VM_ADMIN_PASSWORD` - password for administrator account of your VM
 
 ## Create Resource Group
@@ -65,7 +67,8 @@ Upload VM setup-script to scripts container:
     --account-name $AZURE_STORAGE_ACCOUNT \
     --container-name scripts \
     --name setup-script.sh \
-    --file ./cnn/setup-script.sh`
+    --file ./cnn/setup-script.sh \
+    --overwrite`
 
 Upload ML training & testing scripts to scripts container:
 
@@ -73,13 +76,22 @@ Upload ML training & testing scripts to scripts container:
     --account-name $AZURE_STORAGE_ACCOUNT \
     --container-name scripts \
     --name training.py \
-    --file ./cnn/ml-code/training.py`
+    --file ./cnn/ml-code/training.py \
+    --overwrite`
 
 `az storage blob upload \
     --account-name $AZURE_STORAGE_ACCOUNT \
     --container-name scripts \
     --name testing.py \
-    --file ./cnn/ml-code/testing.py`
+    --file ./cnn/ml-code/testing.py \
+    --overwrite`
+
+`az storage blob upload \
+    --account-name $AZURE_STORAGE_ACCOUNT \
+    --container-name scripts \
+    --name config.json \
+    --file ./cnn/ml-code/config.json \
+    --overwrite`
 
 Enable execution for the url-building script:
 
@@ -90,6 +102,8 @@ Execute the scripts to export the read-access urls to environment variables:
 `. cloud/bash/build-url-with-sas.sh $AZURE_STORAGE_ACCOUNT scripts setup-script.sh AZURE_VM_SETUP_SCRIPT_URL`
 
 `. cloud/bash/build-url-with-sas.sh $AZURE_STORAGE_ACCOUNT scripts training.py AZURE_TRAININGPY_URL`
+
+`. cloud/bash/build-url-with-sas.sh $AZURE_STORAGE_ACCOUNT scripts config.json AZURE_TRAINING_CONFIG_URL`
 
 Upload blobs from the dataset to the datasets container:
 `az storage blob upload-batch \
@@ -122,7 +136,7 @@ Assign yourself to the list of Key Vault administrators with RBAC:
 
 Execute bicep configuration:
 
-`az deployment group create --resource-group $AZURE_RESOURCE_GROUP --template-file ./cloud/bicep/vm.bicep --parameters adminPassword=$AZURE_VM_ADMIN_PASSWORD setupUrl=$AZURE_VM_SETUP_SCRIPT_URL keyVaultName=$AZURE_KEY_VAULT trainingUrl=$AZURE_TRAININGPY_URL`
+`az deployment group create --resource-group $AZURE_RESOURCE_GROUP --template-file ./cloud/bicep/vm.bicep --parameters adminPassword=$AZURE_VM_ADMIN_PASSWORD setupUrl=$AZURE_VM_SETUP_SCRIPT_URL keyVaultName=$AZURE_KEY_VAULT trainingUrl=$AZURE_TRAININGPY_URL configUrl=$AZURE_TRAINING_CONFIG_URL --output json > deploy.json`
 
 ## Clean it Up:
 

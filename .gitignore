@@ -1,4 +1,6 @@
 /cnn/forest-fire
+/cnn/ml-code/config-override.json
 /cloud/bash/preset-environment-variables.sh
+/cloud/bash/preset-environment-variables-override.sh
 /connect.txt
 /deploy.json
