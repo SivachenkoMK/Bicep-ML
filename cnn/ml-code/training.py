@@ -10,10 +10,10 @@ from io import BytesIO
 import logging
 
 import tensorflow as tf
-from tensorflow.keras.utils import load_img, img_to_array, Sequence
+from tensorflow.keras.utils import load_img, img_to_array, image_dataset_from_directory
 from tensorflow.keras.applications.resnet50 import ResNet50, preprocess_input
 from tensorflow.keras.callbacks import ModelCheckpoint
-from tensorflow.keras import layers, models, optimizers, metrics
+from tensorflow.keras import layers, models, optimizers, metrics, Sequential
 
 from azure.storage.blob import BlobServiceClient
 from azure.identity import DefaultAzureCredential
@@ -76,6 +76,7 @@ else:
 # ---------------------------
 container_name = config["container_name"]
 model_container_name = config["model_container_name"]
+root_training_directory = config["root_training_directory"]
 fire_directory = config["fire_directory"]
 nofire_directory = config["nofire_directory"]
 
@@ -86,54 +87,39 @@ container_client = blob_service_client.get_container_client(container_name)
 # ---------------------------
 # Helper Functions
 # ---------------------------
-def fetch_images_from_azure(directory):
-    """Fetch blob names (images) from a given directory prefix in the container."""
-    logging.info(f"Fetching images from directory: {directory}")
+imageNumber = {}
+
+def fetch_and_store_images_from_azure(directory, target_directory):
+    """
+    Fetch all image blobs from a given directory prefix in the Azure container and store them in the specified local directory.
+
+    Args:
+        directory (str): The prefix directory in the Azure container.
+        target_directory (str): The local directory to save the fetched images.
+    """
+    logging.info(f"Fetching and storing images from directory: {directory} to {target_directory}")
+    # Ensure target directory exists
+    if not os.path.exists(target_directory):
+        os.makedirs(target_directory)
     image_paths = []
     blobs = container_client.list_blobs(name_starts_with=directory)
+    
     for blob in blobs:
-        image_paths.append(blob.name)
-    logging.info(f"Found {len(image_paths)} images in {directory}")
+        blob_name = blob.name
+        logging.debug(f"Processing blob: {blob_name}")
+        # Fetch blob data
+        blob_client = container_client.get_blob_client(blob_name)
+        blob_data = blob_client.download_blob()
+        image_bytes = blob_data.readall()
+        # Save blob as file in the target directory
+        file_path = os.path.join(target_directory, os.path.basename(blob_name))
+        with open(file_path, 'wb') as file:
+            file.write(image_bytes)
+        logging.info(f"Saved image to {file_path}")
+        image_paths.append(file_path)
+    logging.info(f"Successfully fetched and stored {len(image_paths)} images from {directory}.")
+    imageNumber[target_directory] = len(image_paths)
     return image_paths
-
-def load_image_from_azure(blob_name):
-    """Load a single image blob from Azure Storage and return a preprocessed numpy array."""
-    logging.debug(f"Loading image from blob: {blob_name}")
-    blob_client = container_client.get_blob_client(blob_name)
-    blob_data = blob_client.download_blob()
-    image_bytes = blob_data.readall()
-    image = load_img(BytesIO(image_bytes), target_size=(224, 224))
-    image_array = img_to_array(image)
-    # Preprocess for ResNet50
-    image_array = preprocess_input(image_array)
-    return image_array
-
-class AzureImageDataGenerator(Sequence):
-    """A custom generator to load images and labels on-the-fly from Azure Blob Storage."""
-    def __init__(self, image_paths, batch_size, shuffle=True):
-        self.image_paths = image_paths
-        self.batch_size = batch_size
-        self.shuffle = shuffle
-        self.num_samples = len(image_paths)
-        self.indexes = np.arange(self.num_samples)
-        self.on_epoch_end()
-        logging.info(f"AzureImageDataGenerator created: {self.num_samples} samples, batch_size={self.batch_size}")
-
-    def __len__(self):
-        # Number of batches per epoch
-        return int(np.floor(self.num_samples / self.batch_size))
-
-    def __getitem__(self, index):
-        logging.debug(f"Fetching batch index {index}")
-        batch_indexes = self.indexes[index * self.batch_size: (index + 1) * self.batch_size]
-        batch_paths = [self.image_paths[i] for i in batch_indexes]
-        images = np.array([load_image_from_azure(p) for p in batch_paths])
-        labels = np.array([1 if 'fire' in p else 0 for p in batch_paths])
-        return images, labels
-
-    def on_epoch_end(self):
-        if self.shuffle:
-            np.random.shuffle(self.indexes)
 
 def create_model():
     """Create a ResNet50-based model."""
@@ -203,46 +189,69 @@ def save_model_to_azure(model, epoch):
 # Load data and prepare class weights
 # ---------------------------
 logging.info("Loading and preparing data.")
-fire_images = fetch_images_from_azure(fire_directory)
-nofire_images = fetch_images_from_azure(nofire_directory)
+fetch_and_store_images_from_azure(fire_directory, fire_directory)
+fetch_and_store_images_from_azure(nofire_directory, nofire_directory)
 
-if len(fire_images) == 0 and len(nofire_images) == 0:
-    logging.error("No images found in either 'fire' or 'nofire' directories.")
-    raise ValueError("No images found for training.")
+num_fire_images = imageNumber[fire_directory]
+num_nofire_images = imageNumber[nofire_directory]
 
-num_fire_images = len(fire_images)
-num_nofire_images = len(nofire_images)
 total_images = num_fire_images + num_nofire_images
 
 if num_fire_images == 0 or num_nofire_images == 0:
     logging.warning("One of the classes has zero images. This will cause issues with training and class weights.")
-    # We can handle this scenario gracefully:
     raise ValueError("One of the classes (fire or nofire) has zero images. Cannot compute class weights.")
 
 weight_for_fire = (1 / num_fire_images) * (total_images) / 2.0
 weight_for_nofire = (1 / num_nofire_images) * (total_images) / 2.0
 class_weights = {0: weight_for_nofire, 1: weight_for_fire}
 
-logging.info(f"Class weights calculated: no fire={class_weights[0]}, fire={class_weights[1]}")
+print(f"Class weights calculated: no fire={class_weights[0]}, fire={class_weights[1]}")
 
 # ---------------------------
 # Split Data into Training and Validation
 # ---------------------------
-logging.info("Splitting data into training and validation sets.")
-train_fire = fire_images[:int(0.8 * len(fire_images))]
-val_fire = fire_images[int(0.8 * len(fire_images)):]
-train_nofire = nofire_images[:int(0.8 * len(nofire_images))]
-val_nofire = nofire_images[int(0.8 * len(nofire_images)):]
+print("Splitting data into training and validation sets.")
 
-train_images = train_fire + train_nofire
-val_images = val_fire + val_nofire
+fire_directory_absolute = os.path.abspath(f"./{root_training_directory}")  # Convert to absolute path
+print(fire_directory_absolute)
+train_generator = image_dataset_from_directory(
+    fire_directory_absolute,
+    image_size=(224, 224),
+    batch_size=32,
+    subset='training',
+    class_names=['fire', 'nofire'],
+    validation_split=0.2,
+    seed=481,
+    shuffle=True
+)
 
-if len(train_images) == 0 or len(val_images) == 0:
-    logging.error("Training or validation dataset is empty after splitting.")
-    raise ValueError("Insufficient images for training or validation after splitting.")
+nofire_directory_absolute = os.path.abspath(f"./{root_training_directory}")  # Convert to absolute path
+print(nofire_directory_absolute)
+validation_generator = image_dataset_from_directory(
+    nofire_directory_absolute,
+    image_size=(224, 224),
+    batch_size=32,
+    class_names=['fire', 'nofire'],
+    validation_split=0.2,
+    subset='validation',
+    seed=481,
+    shuffle=False
+)
 
-train_generator = AzureImageDataGenerator(train_images, batch_size=32, shuffle=True)
-validation_generator = AzureImageDataGenerator(val_images, batch_size=32, shuffle=False)
+data_augmentation = Sequential([
+    layers.Rescaling(1./255),
+    layers.RandomRotation(0.1),
+    layers.RandomZoom(0.2),
+    layers.RandomFlip("horizontal")
+])
+
+train_generator = train_generator.map(
+    lambda x, y: (data_augmentation(x, training=True), y)
+)
+
+validation_generator = validation_generator.map(
+    lambda x, y: (layers.Rescaling(1./255)(x), y)
+)
 
 # ---------------------------
 # Create local directory to save models per epoch

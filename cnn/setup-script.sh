@@ -35,6 +35,7 @@ fi
 WORKDIR="${USER_LOCATION}/workdir"
 if [ ! -d "$WORKDIR" ]; then
   mkdir -p "$WORKDIR"
+  sudo chmod 777 "$WORKDIR"
   log "Created working directory at $WORKDIR."
 else
   log "Working directory $WORKDIR already exists."

@@ -1,6 +1,10 @@
+
 /cnn/forest-fire
 /cnn/ml-code/config-override.json
+/cnn/ml-code/training-local.py
+/cnn/ml-code/saved_models_per_epoch/
 /cloud/bash/preset-environment-variables.sh
 /cloud/bash/preset-environment-variables-override.sh
 /connect.txt
 /deploy.json
+/myenv
