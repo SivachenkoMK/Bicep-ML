@@ -1,5 +1,7 @@
 # Introduction
 
+```Deprecated``` - Will be reworked soon to reflect new structure. No need to memorize all environment variables and commands order, deployment process simplified.
+
 ## Environment Variables
 
 We will use many different environment variables.
@@ -22,9 +24,13 @@ Here is a complete list of all environment variables:
 
 `AZURE_VM_SETUP_SCRIPT_URL` - url to the setup script with SAS key (built from script)
 
-`$AZURE_TRAININGPY_URL` - url to the python training script with SAS key (built from script)
+`$AZURE_TRAININGPY_URL` - read-access url to the python training script (contains SAS key)
 
-`AZURE_TRAINING_CONFIG_URL` - url to the config.json with Azure configurations for training
+`$AZURE_TESTINGPY_URL` - read-access url to the python testing script (contains SAS key)
+
+`AZURE_TRAINING_CONFIG_URL` - url to Azure-related JSON configuration used for training by Python
+
+`AZURE_TESTING_CONFIG_URL` - url to Azure-related JSON configuration used for testing by Python
 
 `AZURE_VM_ADMIN_PASSWORD` - password for administrator account of your VM
 
@@ -67,7 +73,7 @@ Upload VM setup-script to scripts container:
     --account-name $AZURE_STORAGE_ACCOUNT \
     --container-name scripts \
     --name setup-script.sh \
-    --file ./cnn/setup-script.sh \
+    --file ./cloud/bash/setup-script.sh \
     --overwrite`
 
 Upload ML training & testing scripts to scripts container:
@@ -90,7 +96,7 @@ Upload ML training & testing scripts to scripts container:
     --account-name $AZURE_STORAGE_ACCOUNT \
     --container-name scripts \
     --name config.json \
-    --file ./cnn/ml-code/config.json \
+    --file ./cnn/ml-code/config-training.json \
     --overwrite`
 
 Enable execution for the url-building script:
@@ -132,11 +138,17 @@ Assign yourself to the list of Key Vault administrators with RBAC:
   --name "AzureStorageConnectionString" \
   --value $AZURE_STORAGE_CONNECTION`
 
-## Create basic VM (vm.bicep):
+## Create GPU-Based VM for Training Model (vm-training.bicep):
 
 Execute bicep configuration:
 
-`az deployment group create --resource-group $AZURE_RESOURCE_GROUP --template-file ./cloud/bicep/vm.bicep --parameters adminPassword=$AZURE_VM_ADMIN_PASSWORD setupUrl=$AZURE_VM_SETUP_SCRIPT_URL keyVaultName=$AZURE_KEY_VAULT trainingUrl=$AZURE_TRAININGPY_URL configUrl=$AZURE_TRAINING_CONFIG_URL --output json > deploy.json`
+`az deployment group create --resource-group $AZURE_RESOURCE_GROUP --template-file ./cloud/bicep/vm-training.bicep --parameters adminPassword=$AZURE_VM_ADMIN_PASSWORD setupUrl=$AZURE_VM_SETUP_SCRIPT_URL keyVaultName=$AZURE_KEY_VAULT trainingUrl=$AZURE_TRAININGPY_URL configUrl=$AZURE_TRAINING_CONFIG_URL --output json > deploy.json`
+
+## Create GPU-Based VM for Testing Model (vm-testing.bicep):
+
+Execute bicep configuration:
+
+`az deployment group create --resource-group $AZURE_RESOURCE_GROUP --template-file ./cloud/bicep/vm-testing.bicep --parameters adminPassword=$AZURE_VM_ADMIN_PASSWORD setupUrl=$AZURE_VM_SETUP_SCRIPT_URL keyVaultName=$AZURE_KEY_VAULT testingUrl=$AZURE_TESTINGPY_URL configUrl=$AZURE_TESTING_CONFIG_URL --output json > deploy.json`
 
 ## Clean it Up:
 
@@ -151,7 +163,18 @@ Delete all blobs from container (If environment variable is set)
 Revalidate Storage Account Keys:
 `az storage account keys renew --account-name $AZURE_STORAGE_ACCOUNT --key primary`
 
-After killing VM, remove the access policy from IAM for Key Vault
+### VM removal:
+
+Unmount disk before deleting VM:
+`sudo umount /mnt/data`
+
++ Flush pending writes:
+`sudo sync`
+
+Shut down VM gracefully:
+`sudo shutdown -h now`
+
+Remove the access policy from IAM for Key Vault
 `TODO`
 
 Clean Environment variables like:

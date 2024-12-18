@@ -1,17 +1,11 @@
 import os
 import datetime
-import requests
-import numpy as np
-import matplotlib
 import json
-matplotlib.use('Agg')  # Use a non-interactive backend for headless environments
-import matplotlib.pyplot as plt
-from io import BytesIO
 import logging
+import zipfile
 
-import tensorflow as tf
-from tensorflow.keras.utils import load_img, img_to_array, image_dataset_from_directory
-from tensorflow.keras.applications.resnet50 import ResNet50, preprocess_input
+from tensorflow.keras.utils import image_dataset_from_directory
+from tensorflow.keras.applications.resnet50 import ResNet50
 from tensorflow.keras.callbacks import ModelCheckpoint
 from tensorflow.keras import layers, models, optimizers, metrics, Sequential
 
@@ -76,9 +70,15 @@ else:
 # ---------------------------
 container_name = config["container_name"]
 model_container_name = config["model_container_name"]
-root_training_directory = config["root_training_directory"]
-fire_directory = config["fire_directory"]
-nofire_directory = config["nofire_directory"]
+dataset_archive = config["dataset_archive"]
+vm_size = config["vm_size"]
+
+fire_directory = 'fire'
+nofire_directory = 'nofire'
+data_dir = "/mnt/data/training"
+
+fire_path = os.path.join(data_dir, fire_directory)
+nofire_path = os.path.join(data_dir, nofire_directory)
 
 logging.info("Initializing BlobServiceClient with the retrieved connection string.")
 blob_service_client = BlobServiceClient.from_connection_string(connection_string)
@@ -89,37 +89,65 @@ container_client = blob_service_client.get_container_client(container_name)
 # ---------------------------
 imageNumber = {}
 
-def fetch_and_store_images_from_azure(directory, target_directory):
-    """
-    Fetch all image blobs from a given directory prefix in the Azure container and store them in the specified local directory.
-
-    Args:
-        directory (str): The prefix directory in the Azure container.
-        target_directory (str): The local directory to save the fetched images.
-    """
-    logging.info(f"Fetching and storing images from directory: {directory} to {target_directory}")
-    # Ensure target directory exists
-    if not os.path.exists(target_directory):
-        os.makedirs(target_directory)
-    image_paths = []
-    blobs = container_client.list_blobs(name_starts_with=directory)
+def prepare_dataset():
+    # 0. Create data directory if doesn't exist
+    if not os.path.exists(data_dir):
+        os.makedirs(data_dir, exist_ok=True)
     
-    for blob in blobs:
-        blob_name = blob.name
-        logging.debug(f"Processing blob: {blob_name}")
-        # Fetch blob data
-        blob_client = container_client.get_blob_client(blob_name)
-        blob_data = blob_client.download_blob()
-        image_bytes = blob_data.readall()
-        # Save blob as file in the target directory
-        file_path = os.path.join(target_directory, os.path.basename(blob_name))
-        with open(file_path, 'wb') as file:
-            file.write(image_bytes)
-        logging.info(f"Saved image to {file_path}")
-        image_paths.append(file_path)
-    logging.info(f"Successfully fetched and stored {len(image_paths)} images from {directory}.")
-    imageNumber[target_directory] = len(image_paths)
-    return image_paths
+    # Make sure directories exist (creating them if they don't)
+    if not os.path.exists(fire_path):
+        os.makedirs(fire_path, exist_ok=True)
+    if not os.path.exists(nofire_path):
+        os.makedirs(nofire_path, exist_ok=True)
+    
+    # 1. Instead of fetching images from Azure directly, 
+    # we first try to count images already present in /mnt/data.
+    def count_images_in_dir(dir_path):
+        # Count how many files appear to be images. 
+        # We'll assume all files are images for simplicity.
+        if not os.path.exists(dir_path):
+            return 0
+        files = [f for f in os.listdir(dir_path) if os.path.isfile(os.path.join(dir_path, f))]
+        return len(files)
+    
+    imageNumber[fire_path] = count_images_in_dir(fire_path)
+    imageNumber[nofire_path] = count_images_in_dir(nofire_path)
+
+    # 2. If none of the image numbers are 0, we skip downloading.
+    if imageNumber[fire_path] == 0 or imageNumber[nofire_path] == 0:
+        logging.info("At least one directory is empty. Attempting to download and extract the dataset archive.")
+
+        # 2.1. Download the archive from blob storage if we haven't got images locally
+        archive_local_path = os.path.join(data_dir, dataset_archive)
+        
+        # Download the archive
+        logging.info(f"Downloading dataset archive {dataset_archive} from container {container_name}.")
+        blob_client = container_client.get_blob_client(dataset_archive)
+        with open(archive_local_path, 'wb') as f:
+            stream = blob_client.download_blob()
+            for chunk in stream.chunks():
+                f.write(chunk)
+        logging.info("Download completed in chunks.")
+        
+        # 2.2. Extract the content (should contain fire_directory and nofire_directory)
+        logging.info(f"Extracting archive {archive_local_path} to {data_dir}.")
+        with zipfile.ZipFile(archive_local_path, 'r') as zip_ref:
+            zip_ref.extractall(data_dir)
+        
+        # After extraction, we recalculate the image numbers
+        imageNumber[fire_path] = count_images_in_dir(fire_path)
+        imageNumber[nofire_path] = count_images_in_dir(nofire_path)
+
+        # If after extraction at least one is still 0, exit with error
+        if imageNumber[fire_path] == 0 or imageNumber[nofire_path] == 0:
+            logging.error("Failed to populate both directories with images after extraction.")
+            raise SystemExit("No images found after extraction. Exiting.")
+    else:
+        logging.info("Both directories already contain images. No download necessary.")
+
+    # 4. Return the imageNumber dictionary
+    logging.info(f"Image counts: {imageNumber}")
+    return imageNumber
 
 def create_model():
     """Create a ResNet50-based model."""
@@ -146,32 +174,15 @@ def create_model():
     logging.info("Model created and compiled successfully.")
     return model
 
-def get_vm_size():
-    """Retrieve the VM size from Azure Instance Metadata Service."""
-    logging.info("Fetching VM size from Azure Instance Metadata Service.")
-    try:
-        response = requests.get(
-            "http://169.254.169.254/metadata/instance/size?api-version=2021-02-01",
-            headers={"Metadata": "true"}
-        )
-        if response.status_code == 200:
-            vm_size = response.json().get("size", "unknown_size")
-            logging.info(f"VM size retrieved: {vm_size}")
-            return vm_size
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Error fetching VM size: {e}")
-    return "unknown_size"
-
 def save_model_to_azure(model, epoch):
     """Save the model to Azure Blob Storage at specified epoch using the .keras format."""
-    if epoch == 10:
-        logging.info("10th epoch reached. Saving model to Azure.")
+    if epoch == 5:
+        logging.info("5th epoch reached. Saving model to Azure.")
         # Get the current date and VM size
         date_str = datetime.datetime.now().strftime("%Y-%m-%d")
-        vm_size = get_vm_size()
 
         # Define the filename
-        model_filename = f"{date_str}-GPU-{vm_size}.keras"
+        model_filename = f"{date_str}-GPU-{vm_size}-epoch-{epoch}.keras"
 
         # Save the model locally in .keras format
         model_filepath = f"{save_dir}/{model_filename}"
@@ -189,11 +200,12 @@ def save_model_to_azure(model, epoch):
 # Load data and prepare class weights
 # ---------------------------
 logging.info("Loading and preparing data.")
-fetch_and_store_images_from_azure(fire_directory, fire_directory)
-fetch_and_store_images_from_azure(nofire_directory, nofire_directory)
+prepare_dataset()
 
-num_fire_images = imageNumber[fire_directory]
-num_nofire_images = imageNumber[nofire_directory]
+print(imageNumber)
+
+num_fire_images = imageNumber[fire_path]
+num_nofire_images = imageNumber[nofire_path]
 
 total_images = num_fire_images + num_nofire_images
 
@@ -212,10 +224,8 @@ print(f"Class weights calculated: no fire={class_weights[0]}, fire={class_weight
 # ---------------------------
 print("Splitting data into training and validation sets.")
 
-fire_directory_absolute = os.path.abspath(f"./{root_training_directory}")  # Convert to absolute path
-print(fire_directory_absolute)
 train_generator = image_dataset_from_directory(
-    fire_directory_absolute,
+    data_dir,
     image_size=(224, 224),
     batch_size=32,
     subset='training',
@@ -225,10 +235,8 @@ train_generator = image_dataset_from_directory(
     shuffle=True
 )
 
-nofire_directory_absolute = os.path.abspath(f"./{root_training_directory}")  # Convert to absolute path
-print(nofire_directory_absolute)
 validation_generator = image_dataset_from_directory(
-    nofire_directory_absolute,
+    data_dir,
     image_size=(224, 224),
     batch_size=32,
     class_names=['fire', 'nofire'],
@@ -256,7 +264,7 @@ validation_generator = validation_generator.map(
 # ---------------------------
 # Create local directory to save models per epoch
 # ---------------------------
-save_dir = 'saved_models_per_epoch'
+save_dir = '/mnt/data/saved_models_per_epoch'
 if not os.path.exists(save_dir):
     os.makedirs(save_dir)
     logging.info(f"Directory {save_dir} created for saving models.")
@@ -276,7 +284,7 @@ checkpoint = ModelCheckpoint(
 logging.info("Starting model training.")
 history = model.fit(
     train_generator,
-    epochs=10,
+    epochs=5,
     validation_data=validation_generator,
     class_weight=class_weights,
     callbacks=[checkpoint]
@@ -284,39 +292,8 @@ history = model.fit(
 logging.info("Model training completed.")
 
 # ---------------------------
-# Save Model after 10th epoch
+# Save Model after 5th epoch
 # ---------------------------
-save_model_to_azure(model, epoch=10)
-
-# ---------------------------
-# Plot Training History
-# ---------------------------
-logging.info("Plotting training history.")
-epochs_range = range(1, 11)
-
-plt.figure(figsize=(20, 8))
-
-plt.subplot(1, 3, 1)
-plt.plot(epochs_range, history.history['accuracy'], label='Training Accuracy')
-plt.plot(epochs_range, history.history['val_accuracy'], label='Validation Accuracy')
-plt.legend(loc='lower right')
-plt.title('Training and Validation Accuracy')
-
-plt.subplot(1, 3, 2)
-plt.plot(epochs_range, history.history['precision'], label='Training Precision')
-plt.plot(epochs_range, history.history['val_precision'], label='Validation Precision')
-plt.legend(loc='lower right')
-plt.title('Training and Validation Precision')
-
-plt.subplot(1, 3, 3)
-plt.plot(epochs_range, history.history['recall'], label='Training Recall')
-plt.plot(epochs_range, history.history['val_recall'], label='Validation Recall')
-plt.legend(loc='lower right')
-plt.title('Training and Validation Recall')
-
-plt.tight_layout()
-plot_path = f"{save_dir}/overall_training_metrics2.png"
-plt.savefig(plot_path, format="png", dpi=300)
-logging.info(f"Training metrics plot saved at {plot_path}")
+save_model_to_azure(model, epoch=5)
 
 logging.info("Script execution completed.")
