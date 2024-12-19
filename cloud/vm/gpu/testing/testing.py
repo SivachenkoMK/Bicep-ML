@@ -70,7 +70,6 @@ test_generator = test_datagen.flow_from_directory(
     data_dir,
     target_size=(224, 224),
     batch_size=32,
-    class_names=['fire', 'nofire'],
     class_mode='binary',
     shuffle=True
 )

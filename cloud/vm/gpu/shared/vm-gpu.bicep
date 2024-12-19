@@ -16,6 +16,9 @@ param keyVaultName string
 param existingDataDiskId string = '' // Provide the existing disk ID or leave empty to create a new disk
 
 @secure()
+param existingDataDiskName string = ''
+
+@secure()
 param artifactsUrl string
 
 param homeDirectory string = '/home/${adminUsername}'
@@ -211,7 +214,7 @@ resource Vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
       dataDisks: [
         {
           lun: 0
-          name: 'data-disk-${deploymentId}'
+          name: empty(existingDataDiskName) ? 'data-disk-${deploymentId}' : existingDataDiskName
           createOption: 'Attach'
           managedDisk: {
             id: empty(existingDataDiskId) ? dataDisk.id : existingDataDiskId
