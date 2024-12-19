@@ -5,9 +5,7 @@ param deploymentId string = uniqueString('vm-gpu:${resourceGroup().id}')
 
 param location string = resourceGroup().location
 
-param computerName string = 'mikhail'
-
-param adminUsername string = 'mikhail'
+param adminUsername string = 'mikhail' // Overwrite with your name on deployment
 
 @secure()
 param keyVaultName string
@@ -103,7 +101,7 @@ resource Vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
       vmSize: 'Standard_NC4as_T4_v3'
     }
     osProfile: {
-      computerName: computerName
+      computerName: adminUsername
       adminUsername: adminUsername
       adminPassword: adminPassword
       customData: base64(concat(
